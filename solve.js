@@ -46,23 +46,7 @@ export function run(input) {
   let ended = END;
   if (n > 0 && text.charCodeAt(0) === 0xfeff) pos = 1;
 
-  // Finish one record: first record sets the width (and becomes columns
-  // under a header); the rest are padded or cut to it.
-  function finish(fields, recordLine, recordRow) {
-    if (width < 0) width = fields.length;
-    if (header && columns === null) {
-      columns = fields;
-      return;
-    }
-    if (fields.length < width) {
-      errors.push({ code: 'short_row', line: recordLine, row: recordRow, fields: fields.length });
-      while (fields.length < width) fields.push('');
-    } else if (fields.length > width) {
-      errors.push({ code: 'long_row', line: recordLine, row: recordRow, extra: fields.splice(width) });
-    }
-    rows.push(fields);
-  }
-
+  // (finish inlined at its two call sites below.)
   outer: while (pos < n) {
     // Fast path: a whole line with no quote and no CR is one plain record;
     // slice it once and split on commas (native, no per-character work).
@@ -82,7 +66,18 @@ export function run(input) {
       const fields = seg.split(',');
       pos = eol === -1 ? n : eol + 1;
       if (eol !== -1) line += 1;
-      finish(fields, recordLine, recordRow);
+      if (width < 0) width = fields.length;
+      if (header && columns === null) {
+        columns = fields;
+      } else {
+        if (fields.length < width) {
+          errors.push({ code: 'short_row', line: recordLine, row: recordRow, fields: fields.length });
+          while (fields.length < width) fields.push('');
+        } else if (fields.length > width) {
+          errors.push({ code: 'long_row', line: recordLine, row: recordRow, extra: fields.splice(width) });
+        }
+        rows.push(fields);
+      }
       continue;
     }
 
@@ -135,43 +130,23 @@ export function run(input) {
         if (!doubled && raw.indexOf('\n') === -1 && raw.indexOf('\r') === -1) {
           value = raw;
         } else {
-          // Slow path: fold "" to " and every CR/LF run to one LF, counting
-          // the line breaks back onto the line number.
-          let parts = null;
-          let segStart = 0;
-          let p = 0;
-          let breaks = 0;
-          const m = raw.length;
-          while (p < m) {
-            const c = raw.charCodeAt(p);
-            if (c === 34) {
-              if (parts === null) parts = [];
-              parts.push(raw.slice(segStart, p), '"');
-              p += 2;
-              segStart = p;
-            } else if (c === 13) {
-              if (parts === null) parts = [];
-              parts.push(raw.slice(segStart, p), '\n');
-              breaks += 1;
-              p += raw.charCodeAt(p + 1) === 10 ? 2 : 1;
-              segStart = p;
-            } else if (c === 10) {
-              if (parts === null) parts = [];
-              parts.push(raw.slice(segStart, p), '\n');
-              breaks += 1;
-              p += 1;
-              segStart = p;
-            } else {
-              p += 1;
-            }
+          // Slow path, native string ops only: fold "" to " and every CR/LF
+          // run to one LF, counting the line breaks back onto the line.
+          let v = raw;
+          if (doubled) v = v.replaceAll('""', '"');
+          const hasNL = raw.indexOf('\n') !== -1;
+          const hasCR = raw.indexOf('\r') !== -1;
+          if (hasNL || hasCR) {
+            let breaks = 0;
+            let j = raw.indexOf('\n');
+            while (j !== -1) { breaks += 1; j = raw.indexOf('\n', j + 1); }
+            j = raw.indexOf('\r');
+            while (j !== -1) { if (raw.charCodeAt(j + 1) !== 10) breaks += 1; j = raw.indexOf('\r', j + 1); }
+            v = v.replaceAll('\r\n', '\n');
+            if (hasCR) v = v.replaceAll('\r', '\n');
+            line += breaks;
           }
-          if (parts === null) {
-            value = raw;
-          } else {
-            parts.push(raw.slice(segStart, m));
-            value = parts.join('');
-          }
-          line += breaks;
+          value = v;
         }
         pos = q + 1;
         if (pos >= n) {
@@ -214,7 +189,18 @@ export function run(input) {
     // (its stray_cr errors stay).
     if (fields.length === 1 && fields[0] === '' && !lastQuoted) continue outer;
 
-    finish(fields, recordLine, recordRow);
+    if (width < 0) width = fields.length;
+    if (header && columns === null) {
+      columns = fields;
+    } else {
+      if (fields.length < width) {
+        errors.push({ code: 'short_row', line: recordLine, row: recordRow, fields: fields.length });
+        while (fields.length < width) fields.push('');
+      } else if (fields.length > width) {
+        errors.push({ code: 'long_row', line: recordLine, row: recordRow, extra: fields.splice(width) });
+      }
+      rows.push(fields);
+    }
   }
 
   return { columns: header ? (columns ?? []) : null, rows, errors };
